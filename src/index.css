@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: light;
+  color: #213547;
+  background-color: #f8fafc;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+@layer components {
+  .card {
+    @apply bg-white rounded-lg shadow-sm border border-gray-200 p-4;
+  }
+  
+  .stat-card {
+    @apply card flex flex-col;
+  }
+  
+  .stat-value {
+    @apply text-2xl font-bold text-gray-900;
+  }
+  
+  .stat-label {
+    @apply text-sm text-gray-500 mt-1;
+  }
+  
+  .btn-primary {
+    @apply px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors;
+  }
+  
+  .btn-secondary {
+    @apply px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors;
+  }
+}
+
+/* PDF 导出隐藏元素 */
+.no-print {
+  /* 截图时通过 js 隐藏 */
+}
+
+/* PDF 导出时优化样式 */
+.pdf-exporting {
+  background-color: #f9fafb !important;
+}
+
+.pdf-exporting .no-print,
+.pdf-exporting [data-no-print] {
+  display: none !important;
+}
+
+/* 图表在导出时确保完全可见 */
+.pdf-exporting .recharts-wrapper {
+  overflow: visible !important;
+}
+
+.pdf-exporting .card {
+  break-inside: avoid;
+  page-break-inside: avoid;
+  box-shadow: none !important;
+  border: 1px solid #e5e7eb !important;
+}
