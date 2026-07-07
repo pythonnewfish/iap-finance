@@ -35,7 +35,7 @@ function Dashboard({ data, report, exportDate, hasMediaField = true, hasCountryF
     country: '全部'
   })
   
-  const [showIntegrityReport, setShowIntegrityReport] = useState(true)
+  const [showIntegrityReport, setShowIntegrityReport] = useState(false)
   const [selectedWeekKey, setSelectedWeekKey] = useState(null) // null = 默认最近一周
   const [showAnalysis, setShowAnalysis] = useState(true) // 是否显示分析洞察
   const [vatMode, setVatMode] = useState(false) // 是否扣除增值税
