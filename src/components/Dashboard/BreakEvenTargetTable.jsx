@@ -109,14 +109,27 @@ function BreakEvenTargetTable({ data, hasCountryField, hasMediaField }) {
   const tableData = useMemo(() => {
     if (!tableDisplayData || !hasCountryField || !computedBeta || computedBeta <= 0) return []
     
-    // 按国家汇总消耗
+    // 找出最近一周
+    const weeks = new Set()
+    tableDisplayData.forEach(r => {
+      const wk = r['周']
+      if (wk) weeks.add(wk)
+    })
+    const sortedWeeks = Array.from(weeks).sort()
+    const latestWeek = sortedWeeks.length > 0 ? sortedWeeks[sortedWeeks.length - 1] : null
+    
+    // 按国家汇总总消耗和最近一周消耗
     const spendByCountry = {}
+    const recentSpendByCountry = {}
     tableDisplayData.forEach(r => {
       if (r._isOrganic) return
       const country = r['国家']
       if (!country) return
       const spend = Number(r['消耗($)']) || 0
       spendByCountry[country] = (spendByCountry[country] || 0) + spend
+      if (latestWeek && r['周'] === latestWeek) {
+        recentSpendByCountry[country] = (recentSpendByCountry[country] || 0) + spend
+      }
     })
     
     // 按消耗降序排列
@@ -159,6 +172,7 @@ function BreakEvenTargetTable({ data, hasCountryField, hasMediaField }) {
         vatRate,
         breakEvenGross,
         spend: spendByCountry[country],
+        recentSpend: recentSpendByCountry[country] || 0,
         countryBeta,
         targets
       }
@@ -280,6 +294,8 @@ function BreakEvenTargetTable({ data, hasCountryField, hasMediaField }) {
           <thead>
             <tr className="border-b border-gray-200 bg-gray-50">
               <th className="text-left py-2 px-3 text-xs font-medium text-gray-600">国家</th>
+              <th className="text-right py-2 px-3 text-xs font-medium text-gray-600">最近周消耗</th>
+              <th className="text-right py-2 px-3 text-xs font-medium text-gray-600">总消耗</th>
               <th className="text-right py-2 px-3 text-xs font-medium text-gray-600">VAT</th>
               <th className="text-right py-2 px-3 text-xs font-medium text-gray-600">各国β</th>
               <th className="text-right py-2 px-3 text-xs font-medium text-gray-600">回本阈值</th>
@@ -298,9 +314,12 @@ function BreakEvenTargetTable({ data, hasCountryField, hasMediaField }) {
               >
                 <td className="py-2 px-3 font-medium">
                   {row.country}
-                  <span className="text-xs text-gray-400 ml-1">
-                    (${Math.round(row.spend).toLocaleString()})
-                  </span>
+                </td>
+                <td className="py-2 px-3 text-right text-gray-700 font-medium">
+                  ${Math.round(row.recentSpend).toLocaleString()}
+                </td>
+                <td className="py-2 px-3 text-right text-gray-500 text-xs">
+                  ${Math.round(row.spend).toLocaleString()}
                 </td>
                 <td className="py-2 px-3 text-right text-gray-600">
                   {(row.vatRate * 100).toFixed(0)}%
