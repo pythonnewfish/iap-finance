@@ -1,5 +1,6 @@
 import { FIELD_MAPPING } from '../constants/fieldMapping'
 import { getWeekRange, getISOWeek } from './parser'
+import { getVATRate } from '../constants/vatRates'
 
 /**
  * 数据聚合服务
@@ -75,7 +76,8 @@ function avg(arr) {
  */
 export function aggregateByGroup(data, groupBy, options = {}) {
   const {
-    includeMilestones = DEFAULT_MILESTONES
+    includeMilestones = DEFAULT_MILESTONES,
+    vatMode = false
   } = options
   
   const fieldName = getFieldName('dimensions', groupBy)
@@ -93,7 +95,7 @@ export function aggregateByGroup(data, groupBy, options = {}) {
   
   // 计算每个分组的聚合指标
   const result = Object.entries(groups).map(([groupName, rows]) => {
-    const agg = aggregateRows(rows, { includeMilestones })
+    const agg = aggregateRows(rows, { includeMilestones, vatMode })
     return {
       name: groupName,
       ...agg
@@ -108,13 +110,18 @@ export function aggregateByGroup(data, groupBy, options = {}) {
 
 /**
  * 聚合多行数据
+ * @param {Object} options.vatMode - 是否扣除增值税
  */
 export function aggregateRows(rows, options = {}) {
   const {
-    includeMilestones = DEFAULT_MILESTONES
+    includeMilestones = DEFAULT_MILESTONES,
+    vatMode = false
   } = options
   
   if (rows.length === 0) return {}
+  
+  // VAT 扣除辅助函数：获取行的增值税除数
+  const vatDivisor = (r) => vatMode ? (1 + getVATRate(r[getFieldName('dimensions', 'country')])) : 1
   
   // 分离付费和自然量数据
   const paidRows = rows.filter(r => !r._isOrganic)
@@ -125,18 +132,19 @@ export function aggregateRows(rows, options = {}) {
   // 消耗：仅付费（自然量消耗为0）
   const spend = sum(paidRows.map(r => r[getFieldName('acquisition', 'spend')]))
   // 收入：包含自然量收入（自然量收入并入对应周收入）
-  const revenue = sum(rows.map(r => r[getFieldName('revenue', 'totalRevenue')]))
+  // vatMode=true 时：毛收入 / (1 + VAT税率)
+  const revenue = sum(rows.map(r => (Number(r[getFieldName('revenue', 'totalRevenue')]) || 0) / vatDivisor(r)))
   
   // 派生指标
   const cpa = newUsers > 0 ? spend / newUsers : 0
-  // 付费率：按活跃用户加权（sum(付费率×活跃用户)/sum(活跃用户)）
+  // 付费率：按活跃用户加权（不受 VAT 影响）
   const payingRateValues = paidRows.map(r => r[getFieldName('monetization', 'payingRate')])
   const activeUsersArr = paidRows.map(r => r[getFieldName('acquisition', 'activeUsers')])
   const avgPayingRate = weightedAvg(payingRateValues, activeUsersArr)
-  // ARPPU：按活跃用户加权（sum(ARPPU×活跃用户)/sum(活跃用户)）
-  const arppuValues = paidRows.map(r => r[getFieldName('monetization', 'arppu')])
+  // ARPPU：按活跃用户加权，vatMode 时逐行扣除
+  const arppuValues = paidRows.map(r => (Number(r[getFieldName('monetization', 'arppu')]) || 0) / vatDivisor(r))
   const avgArppu = weightedAvg(arppuValues, activeUsersArr)
-  const avgArpudau = avg(paidRows.map(r => r[getFieldName('revenue', 'arpudau')]))
+  const avgArpudau = avg(paidRows.map(r => (Number(r[getFieldName('revenue', 'arpudau')]) || 0) / vatDivisor(r)))
   
   // 里程碑数据
   // ROI：按消耗加权 sum(ROI×消耗)/sum(消耗) = 总收入/总消耗
@@ -164,8 +172,9 @@ export function aggregateRows(rows, options = {}) {
       milestones[`ltv_d${day}`] = null
       milestones[`retention_d${day}`] = null
     } else {
-      const roiValues = completeRows.map(r => r[getFieldName('roi', roiField)])
-      const ltvValues = completeRows.map(r => r[getFieldName('ltv', ltvField)])
+      // ROI/LTV: vatMode 时逐行扣除增值税
+      const roiValues = completeRows.map(r => (Number(r[getFieldName('roi', roiField)]) || 0) / vatDivisor(r))
+      const ltvValues = completeRows.map(r => (Number(r[getFieldName('ltv', ltvField)]) || 0) / vatDivisor(r))
       const retentionValues = completeRows.map(r => r[getFieldName('retention', retentionField)])
       const newUsersArr = completeRows.map(r => r[getFieldName('acquisition', 'newUsers')])
       const spendArr = completeRows.map(r => r[getFieldName('acquisition', 'spend')])
@@ -198,7 +207,7 @@ export function aggregateRows(rows, options = {}) {
  * 按周聚合数据
  */
 export function aggregateByWeek(data, options = {}) {
-  const { includeMilestones = DEFAULT_MILESTONES } = options
+  const { includeMilestones = DEFAULT_MILESTONES, vatMode = false } = options
   
   // 按周分组
   const weeks = {}
@@ -231,7 +240,7 @@ export function aggregateByWeek(data, options = {}) {
   const result = Object.entries(weeks)
     .map(([key, weekData]) => {
       const { weekKey, year, week, rows } = weekData
-      const agg = aggregateRows(rows, { includeMilestones })
+      const agg = aggregateRows(rows, { includeMilestones, vatMode })
       
       // 获取该周的日期范围
       const dates = rows
@@ -302,7 +311,8 @@ export function getWeekOptions(data) {
 /**
  * 根据指定的周范围获取聚合数据
  */
-export function getWeekDataByRange(data, weekOption) {
+export function getWeekDataByRange(data, weekOption, options = {}) {
+  const { vatMode = false } = options
   if (!data || data.length === 0 || !weekOption) return null
   
   const dateField = getFieldName('dimensions', 'date')
@@ -321,7 +331,7 @@ export function getWeekDataByRange(data, weekOption) {
   if (rows.length === 0) return null
   
   return {
-    ...aggregateRows(rows),
+    ...aggregateRows(rows, { vatMode }),
     weekRange: `${weekOption.start.toLocaleDateString('zh-CN')} ~ ${weekOption.end.toLocaleDateString('zh-CN')}`,
     weekKey: weekOption.weekKey
   }
@@ -351,7 +361,8 @@ export function getWeekRows(data, weekOption) {
  * 获取最近一周数据（导出日期往前推一周）
  * 如导出日期为6月15日（周一），则最近一周为6月8日~6月14日
  */
-export function getCurrentWeekData(data, exportDate) {
+export function getCurrentWeekData(data, exportDate, options = {}) {
+  const { vatMode = false } = options
   if (!data || data.length === 0 || !exportDate) return null
   
   // 往前推7天
@@ -374,7 +385,7 @@ export function getCurrentWeekData(data, exportDate) {
   if (currentWeekRows.length === 0) return null
   
   return {
-    ...aggregateRows(currentWeekRows),
+    ...aggregateRows(currentWeekRows, { vatMode }),
     weekRange: `${weekRange.start.toLocaleDateString('zh-CN')} ~ ${weekRange.end.toLocaleDateString('zh-CN')}`
   }
 }

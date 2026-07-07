@@ -5,9 +5,10 @@ import {
   ReferenceLine
 } from 'recharts'
 
-const BREAK_EVEN_ROI = 1.5
+// 默认回本线：平台分成30%，即 1/0.70 ≈ 142.9%
+const DEFAULT_BREAK_EVEN = 1 / 0.70
 
-function RoiPredictionChart({ observations, prediction }) {
+function RoiPredictionChart({ observations, prediction, breakEvenROI = DEFAULT_BREAK_EVEN }) {
   const chartData = useMemo(() => {
     if (!prediction || prediction.confidence === 'none' || !observations?.length) {
       return { obsPoints: [], fitLine: [], extrapLine: [] }
@@ -63,7 +64,7 @@ function RoiPredictionChart({ observations, prediction }) {
 
   const { obsPoints, fitLine, extrapLine, maxDay } = chartData
   const breakEvenDay = prediction?.breakEvenDay
-  const breakEvenPct = BREAK_EVEN_ROI * 100
+  const breakEvenPct = breakEvenROI * 100
 
   return (
     <div className="h-72">
@@ -103,7 +104,7 @@ function RoiPredictionChart({ observations, prediction }) {
             y={breakEvenPct}
             stroke="#ef4444"
             strokeDasharray="5 3"
-            label={{ value: '回本线 150%', position: 'right', fill: '#ef4444', fontSize: 11 }}
+            label={{ value: `现金回本线 ${breakEvenPct.toFixed(0)}%`, position: 'right', fill: '#ef4444', fontSize: 11 }}
           />
 
           {/* 回本日竖线 */}

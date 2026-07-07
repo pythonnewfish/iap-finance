@@ -3,6 +3,8 @@
  * 生成独立的 HTML 文件，内嵌数据 + Chart.js 图表 + 筛选交互
  */
 
+import { VAT_RATES } from '../constants/vatRates'
+
 /**
  * 导出为独立 HTML 文件
  * @param {Object} params - 导出数据
@@ -138,6 +140,11 @@ tr:hover td { background: #f8fafc; }
       <label>产品:</label><select id="f-appName" onchange="applyFilters()"><option value="全部">全部</option></select>
       ${hasCountryField ? `<label>国家:</label><select id="f-country" onchange="applyFilters()"><option value="全部">全部</option></select>` : ''}
       <label>查看周:</label><select id="f-week" onchange="applyFilters()"></select>
+      <label style="display:flex;align-items:center;gap:6px;margin-left:auto;cursor:pointer;">
+        <input type="checkbox" id="f-vat" onchange="applyFilters()" style="width:16px;height:16px;">
+        <span>扣除增值税</span>
+      </label>
+      <span id="vat-tag" style="display:none;background:#dcfce7;color:#166534;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:500;">净收入模式</span>
     </div>
   </div>
 
@@ -219,6 +226,18 @@ const HAS_COUNTRY = ${hasCountryField};
 const ROI_PREDICTIONS = ${predictionsJSON};
 const ANALYSES = ${analysesJSON};
 const WEEKLY_DATA = ${weeklyDataJSON};
+const VAT_RATES = ${JSON.stringify(VAT_RATES)};
+let vatMode = false;
+
+// ===== VAT 函数 =====
+function getVATRate(country) {
+  if (!country) return 0;
+  const key = String(country).trim().toUpperCase();
+  return VAT_RATES[key] || 0;
+}
+function vatDivisor(row) {
+  return vatMode ? (1 + getVATRate(row[FM.country])) : 1;
+}
 
 // ===== 字段映射 =====
 const FM = {
@@ -280,15 +299,16 @@ function aggregate(rows) {
   const paidRows = rows.filter(r => !r[FM.isOrganic]);
   const newUsers = sum(paidRows.map(r => pn(r[FM.newUsers])));
   const spend = sum(paidRows.map(r => pn(r[FM.spend])));
-  const revenue = sum(rows.map(r => pn(r[FM.revenue])));
+  // VAT: 毛收入 / (1 + vatRate)
+  const revenue = sum(rows.map(r => pn(r[FM.revenue]) / vatDivisor(r)));
   const cpa = newUsers > 0 ? spend / newUsers : 0;
 
   const activeArr = paidRows.map(r => pn(r[FM.activeUsers]));
-  const prVals = paidRows.map(r => pp(r[FM.payingRate]));
-  const arVals = paidRows.map(r => pn(r[FM.arppu]));
+  const prVals = paidRows.map(r => pp(r[FM.payingRate])); // 付费率不受 VAT 影响
+  const arVals = paidRows.map(r => pn(r[FM.arppu]) / vatDivisor(r)); // ARPPU 扣除 VAT
   const payingRate = wavg(prVals, activeArr);
   const arppu = wavg(arVals, activeArr);
-  const arpudau = paidRows.length > 0 ? sum(paidRows.map(r => pn(r[FM.arpudau]))) / paidRows.length : null;
+  const arpudau = paidRows.length > 0 ? sum(paidRows.map(r => pn(r[FM.arpudau]) / vatDivisor(r))) / paidRows.length : null;
 
   const milestones = {};
   [1,7,14,30,60].forEach(day => {
@@ -300,9 +320,12 @@ function aggregate(rows) {
     } else {
       const nuArr = complete.map(r => pn(r[FM.newUsers]));
       const spArr = complete.map(r => pn(r[FM.spend]));
-      const roi = aggROI(complete.map(r => pp(r[roiF])), spArr);
-      const ltv = wavg(complete.map(r => pn(r[ltvF])), nuArr);
-      const ret = wavg(complete.map(r => pp(r[retF])), nuArr);
+      // ROI/LTV 扣除 VAT
+      const roiVals = complete.map(r => pp(r[roiF]) / vatDivisor(r));
+      const roi = aggROI(roiVals, spArr);
+      const ltvVals = complete.map(r => pn(r[ltvF]) / vatDivisor(r));
+      const ltv = wavg(ltvVals, nuArr);
+      const ret = wavg(complete.map(r => pp(r[retF])), nuArr); // 留存率不受 VAT 影响
       // 0值视为数据未跑满，置为null
       milestones['roi_d'+day] = roi !== null && roi > 0 ? roi : null;
       milestones['ltv_d'+day] = ltv !== null && ltv > 0 ? ltv : null;
@@ -594,6 +617,8 @@ function renderROIPredictionTable() {
     const d30Val = actualD30 ? (actualD30.roi * 100).toFixed(1) + '%*' : '-';
     const d180 = p.prediction.predictD180 != null ? (p.prediction.predictD180 * 100).toFixed(1) + '%' : '-';
     const d180Color = p.prediction.predictD180 >= 1.5 ? '#16a34a' : p.prediction.predictD180 >= 1.0 ? '#ca8a04' : '#dc2626';
+    const breakEvenThreshold = p.prediction.breakEvenROI || (1 / 0.70);
+    const breakEvenPct = (breakEvenThreshold * 100).toFixed(1);
     const breakEven = p.prediction.breakEvenDay ? 'D' + p.prediction.breakEvenDay : '无法回本';
     const r2 = p.prediction.r2 > 0 ? (p.prediction.r2 * 100).toFixed(0) + '%' : '-';
     const conf = confLabel[p.prediction.confidence] || '-';
@@ -604,7 +629,7 @@ function renderROIPredictionTable() {
     html += '<td style="text-align:right">' + firstDay + '~' + lastDay + '</td>';
     html += '<td style="text-align:right">' + d30Val + '</td>';
     html += '<td style="text-align:right;color:' + d180Color + ';font-weight:600">' + d180 + '</td>';
-    html += '<td style="text-align:right">' + breakEven + (p.prediction.breakEvenDay ? ' <small style="color:#94a3b8">ROI≥150%</small>' : '') + '</td>';
+    html += '<td style="text-align:right">' + breakEven + (p.prediction.breakEvenDay ? ' <small style="color:#94a3b8">ROI≥' + breakEvenPct + '%</small>' : '') + '</td>';
     html += '<td style="text-align:right;color:#64748b">' + r2 + '</td>';
     html += '<td style="text-align:center"><span style="background:' + confC + '20;color:' + confC + ';padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">' + conf + '</span></td>';
     html += '</tr>';
@@ -615,7 +640,7 @@ function renderROIPredictionTable() {
   
   const methodDiv = document.getElementById('prediction-method');
   if (methodDiv) {
-    methodDiv.innerHTML = '<strong>预测方法说明：</strong>幂律函数 ROI(t) = a × t<sup>β</sup>，对数空间线性回归拟合。使用 D1~D30 每日 ROI + D36 起里程碑数据，单调性异常值剔除。汇集历史所有周数据（以 D30 归一化）拟合全局增长曲线作为外推基准。以当前周最远观测日为锚点，按全局模型曲线等比缩放预估长线 ROI。回本日 = ROI 达到 150%（财务回本线）的预测天数。'
+    methodDiv.innerHTML = '<strong>预测方法说明：</strong>幂律函数 ROI(t) = a × t<sup>β</sup>，对数空间线性回归拟合。使用 D1~D30 每日 ROI + D36 起里程碑数据，单调性异常值剔除。汇集历史所有周数据（以 D30 归一化）拟合全局增长曲线作为外推基准。以当前周最远观测日为锚点，按全局模型曲线等比缩放预估长线 ROI。回本日 = 现金回本线（考虑平台分成30%，增值税开启时另加 VAT）的预测天数。'
       + '<div style="margin-top:8px"><strong>数据清理规则：</strong>'
       + '① 时间完整性：根据导出日期与数据日期计算可用天数，未跑满的里程碑不参与聚合；'
       + '② ROI 单调性：ROI 为累积收入比，应单调递增，若 D(N) ROI &lt; D(N-1) ROI 视为异常剔除；'
@@ -679,6 +704,12 @@ function applyFilters() {
   const media = document.getElementById('f-media')?.value || '全部';
   const appName = document.getElementById('f-appName')?.value || '全部';
   const country = document.getElementById('f-country')?.value || '全部';
+  
+  // 读取 VAT 开关
+  const vatCheckbox = document.getElementById('f-vat');
+  vatMode = vatCheckbox ? vatCheckbox.checked : false;
+  const vatTag = document.getElementById('vat-tag');
+  if (vatTag) vatTag.style.display = vatMode ? 'inline' : 'none';
 
   const filtered = RAW_DATA.filter(r => {
     if (HAS_MEDIA && media !== '全部' && r[FM.media] !== media) return false;

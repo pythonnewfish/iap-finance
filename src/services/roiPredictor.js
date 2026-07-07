@@ -18,8 +18,13 @@ const ALL_DAYS = [
   36, 42, 48, 54, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255, 270, 285, 300, 315, 330, 345, 360
 ]
 
-// 回本线 ROI = 150%
-const BREAK_EVEN_ROI = 1.5
+// 平台分成比例（Apple/Google 抽取 30%）
+const PLATFORM_CUT = 0.70
+
+// 默认回本线：仅考虑平台分成，不含 VAT
+// cashROI = grossROI × 0.70 / (1 + VAT)
+// 回本条件：cashROI = 1 → grossROI = (1 + VAT) / 0.70
+const DEFAULT_BREAK_EVEN_ROI = 1 / PLATFORM_CUT  // ≈ 1.4286 (142.9%)
 
 /**
  * 从 weeklyData 某周中提取非 null 的 ROI 观测点
@@ -140,12 +145,13 @@ function buildGlobalModel(allWeekObservations) {
  * 对单周进行幂律拟合
  * @param {Array<{day: number, roi: number}>} observations - 观测点
  * @param {Object|null} globalModel - 全局参考模型
+ * @param {number} breakEvenROI - 回本线阈值（毛ROI），默认 1/0.70 ≈ 142.9%
  * @returns {Object} 拟合结果
  */
-export function fitWeekCohort(observations, globalModel = null) {
+export function fitWeekCohort(observations, globalModel = null, breakEvenROI = DEFAULT_BREAK_EVEN_ROI) {
   if (!observations || observations.length < 2) {
     if (globalModel && observations?.length >= 1) {
-      return buildMultiplierResult(globalModel, observations, 'multiplier')
+      return buildMultiplierResult(globalModel, observations, 'multiplier', breakEvenROI)
     }
     return {
       confidence: 'none', predictAt: () => null, predictD180: null,
@@ -158,7 +164,7 @@ export function fitWeekCohort(observations, globalModel = null) {
   
   if (n < 2) {
     if (globalModel) {
-      return buildMultiplierResult(globalModel, observations, 'multiplier')
+      return buildMultiplierResult(globalModel, observations, 'multiplier', breakEvenROI)
     }
     return { confidence: 'none', predictAt: () => null, predictD180: null, breakEvenDay: null, r2: 0, nPoints: observations.length }
   }
@@ -169,14 +175,14 @@ export function fitWeekCohort(observations, globalModel = null) {
     const logPoints = cleanObs.map(o => ({ x: Math.log(o.day), y: Math.log(o.roi) }))
     const fit = logLinearRegression(logPoints)
     if (fit && fit.slope > 0) {
-      const result = buildResultFromParams(Math.exp(fit.intercept), fit.slope, cleanObs)
+      const result = buildResultFromParams(Math.exp(fit.intercept), fit.slope, cleanObs, breakEvenROI)
       return { ...result, r2: fit.r2, nPoints: observations.length, cleanPoints: n, confidence: 'actual' }
     }
   }
   
   // 有全局模型：一律使用倍率法（借用全局模型的曲线形状）
   if (globalModel) {
-    return buildMultiplierResult(globalModel, cleanObs, 'multiplier')
+    return buildMultiplierResult(globalModel, cleanObs, 'multiplier', breakEvenROI)
   }
   
   // 无全局模型：兑底纯数据拟合
@@ -189,7 +195,7 @@ export function fitWeekCohort(observations, globalModel = null) {
   let beta = fit.slope
   if (beta <= 0) beta = 0.01
   const a = Math.exp(fit.intercept)
-  const result = buildResultFromParams(a, beta, cleanObs)
+  const result = buildResultFromParams(a, beta, cleanObs, breakEvenROI)
   
   let confidence = 'low'
   if (n >= 10 && fit.r2 >= 0.90) confidence = 'high'
@@ -203,7 +209,7 @@ export function fitWeekCohort(observations, globalModel = null) {
  * 缩放因子 = 当前周锚点 ROI / 全局模型在锚点的预测值
  * 预测 = 全局模型曲线 × 缩放因子
  */
-function buildMultiplierResult(globalModel, observations, confidence) {
+function buildMultiplierResult(globalModel, observations, confidence, breakEvenROI = DEFAULT_BREAK_EVEN_ROI) {
   if (!observations || observations.length === 0) {
     return { confidence: 'none', predictAt: () => null, predictD180: null, breakEvenDay: null, r2: 0, nPoints: 0 }
   }
@@ -230,16 +236,16 @@ function buildMultiplierResult(globalModel, observations, confidence) {
   
   // 回本日预测
   let breakEvenDay = null
-  const alreadyBreakEven = sorted.some(o => o.roi >= BREAK_EVEN_ROI)
+  const alreadyBreakEven = sorted.some(o => o.roi >= breakEvenROI)
   if (alreadyBreakEven) {
-    const breakEvenObs = sorted.find(o => o.roi >= BREAK_EVEN_ROI)
+    const breakEvenObs = sorted.find(o => o.roi >= breakEvenROI)
     if (breakEvenObs) breakEvenDay = breakEvenObs.day
-  } else if (predictD180 >= BREAK_EVEN_ROI || predictAt(1000) >= BREAK_EVEN_ROI) {
+  } else if (predictD180 >= breakEvenROI || predictAt(1000) >= breakEvenROI) {
     // 二分搜索回本日（扩展至D1000）
     let lo = anchor.day, hi = 1000
     while (hi - lo > 1) {
       const mid = Math.floor((lo + hi) / 2)
-      if (predictAt(mid) >= BREAK_EVEN_ROI) hi = mid
+      if (predictAt(mid) >= breakEvenROI) hi = mid
       else lo = mid
     }
     breakEvenDay = hi
@@ -254,6 +260,7 @@ function buildMultiplierResult(globalModel, observations, confidence) {
     predictAt,
     predictD180,
     breakEvenDay,
+    breakEvenROI,
     r2: globalModel.r2 || 0,
     nPoints: observations.length,
     confidence
@@ -263,7 +270,7 @@ function buildMultiplierResult(globalModel, observations, confidence) {
 /**
  * 从模型参数构建预测结果
  */
-function buildResultFromParams(a, beta, observations) {
+function buildResultFromParams(a, beta, observations, breakEvenROI = DEFAULT_BREAK_EVEN_ROI) {
   const predictAt = (day) => {
     if (day <= 0) return 0
     return a * Math.pow(day, beta)
@@ -272,12 +279,12 @@ function buildResultFromParams(a, beta, observations) {
   const predictD180 = predictAt(180)
   
   let breakEvenDay = null
-  const alreadyBreakEven = observations.some(o => o.roi >= BREAK_EVEN_ROI)
+  const alreadyBreakEven = observations.some(o => o.roi >= breakEvenROI)
   if (alreadyBreakEven) {
-    const breakEvenObs = observations.find(o => o.roi >= BREAK_EVEN_ROI)
+    const breakEvenObs = observations.find(o => o.roi >= breakEvenROI)
     if (breakEvenObs) breakEvenDay = breakEvenObs.day
   } else {
-    const t = Math.pow(BREAK_EVEN_ROI / a, 1 / beta)
+    const t = Math.pow(breakEvenROI / a, 1 / beta)
     if (t > 0 && isFinite(t)) {
       breakEvenDay = Math.ceil(t)
     }
@@ -290,15 +297,18 @@ function buildResultFromParams(a, beta, observations) {
     beta,
     predictAt,
     predictD180: hasActual180 ? observations.find(o => o.day === 180)?.roi || predictD180 : predictD180,
-    breakEvenDay
+    breakEvenDay,
+    breakEvenROI
   }
 }
 
 /**
  * 批量预测所有周
  * 先汇集所有周数据构建全局参考模型，再对每周进行预测
+ * @param {Array} weeklyData - 每周聚合数据
+ * @param {number} breakEvenROI - 回本线阈值（毛ROI），默认 1/0.70 ≈ 142.9%
  */
-export function predictAllWeeks(weeklyData) {
+export function predictAllWeeks(weeklyData, breakEvenROI = DEFAULT_BREAK_EVEN_ROI) {
   if (!weeklyData || weeklyData.length === 0) return []
   
   // 1. 提取并清洗所有周的观测数据
@@ -311,7 +321,18 @@ export function predictAllWeeks(weeklyData) {
   return weeklyData.map((w, i) => {
     const observations = extractObservations(w)
     const cleanObs = allCleanObs[i]
-    const prediction = fitWeekCohort(observations, globalModel)
+    const prediction = fitWeekCohort(observations, globalModel, breakEvenROI)
     return { weekKey: w.weekKey, observations: cleanObs, rawObservations: observations, prediction }
   })
+}
+
+/**
+ * 计算现金回本 ROI 阈值
+ * cashROI = grossROI × PLATFORM_CUT / (1 + avgVAT)
+ * 回本条件：cashROI = 1 → grossROI = (1 + avgVAT) / PLATFORM_CUT
+ * @param {number} avgVAT - 加权平均增值税率（如 0.1 表示 10%）
+ * @returns {number} 回本线阈值（毛ROI）
+ */
+export function computeBreakEvenROI(avgVAT = 0) {
+  return (1 + avgVAT) / PLATFORM_CUT
 }

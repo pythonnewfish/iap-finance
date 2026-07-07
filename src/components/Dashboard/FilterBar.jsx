@@ -1,4 +1,26 @@
-function FilterBar({ filters, onChange, options }) {
+import { useMemo } from 'react'
+import { getVATRate } from '../../constants/vatRates'
+
+function FilterBar({ filters, onChange, options, vatMode = false, onVatModeChange, data }) {
+  // VAT 诊断：检测有效税率覆盖
+  const vatDiag = useMemo(() => {
+    if (!vatMode || !data) return null
+    const countries = new Set()
+    let matched = 0, unmatched = new Set()
+    data.forEach(r => {
+      if (r._isOrganic) return
+      const c = r['国家']
+      if (!c) return
+      countries.add(c)
+      if (getVATRate(c) > 0) matched++
+      else unmatched.add(c)
+    })
+    return {
+      totalCountries: countries.size,
+      matchedCountries: [...countries].filter(c => getVATRate(c) > 0).length,
+      unmatchedSamples: [...unmatched].slice(0, 5)
+    }
+  }, [vatMode, data])
   return (
     <div className="card mb-6">
       <div className="flex flex-wrap gap-4 items-center">
@@ -46,6 +68,36 @@ function FilterBar({ filters, onChange, options }) {
                 <option key={opt} value={opt}>{opt}</option>
               ))}
             </select>
+          </div>
+        )}
+        
+        {/* VAT 扣除开关 */}
+        <div className="flex items-center gap-2 ml-auto">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={vatMode}
+              onChange={(e) => onVatModeChange?.(e.target.checked)}
+              className="w-4 h-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+            />
+            <span className="text-sm text-gray-700">扣除增值税</span>
+          </label>
+          {vatMode && (
+            <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs font-medium rounded">
+              净收入模式
+            </span>
+          )}
+        </div>
+        
+        {/* VAT 诊断提示 */}
+        {vatMode && vatDiag && vatDiag.totalCountries > 0 && vatDiag.matchedCountries === 0 && (
+          <div className="w-full mt-2 px-3 py-1.5 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-700">
+            ⚠️ 未匹配到增值税税率：检测到国家代码 [{vatDiag.unmatchedSamples.join(', ')}]，请确认是否为两位 ISO 代码（如 JP/KR/US）
+          </div>
+        )}
+        {vatMode && vatDiag && vatDiag.matchedCountries > 0 && vatDiag.matchedCountries < vatDiag.totalCountries && (
+          <div className="w-full mt-2 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
+            ℹ️ VAT 覆盖：{vatDiag.matchedCountries}/{vatDiag.totalCountries} 个国家匹配到税率{vatDiag.unmatchedSamples.length > 0 && `，未匹配: ${vatDiag.unmatchedSamples.join(', ')}`}
           </div>
         )}
         

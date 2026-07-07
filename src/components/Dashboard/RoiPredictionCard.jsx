@@ -1,5 +1,7 @@
 import { useState, useMemo } from 'react'
-import { predictAllWeeks } from '../../services/roiPredictor'
+import { predictAllWeeks, computeBreakEvenROI } from '../../services/roiPredictor'
+import { aggregateByWeek } from '../../services/aggregator'
+import { getVATRate } from '../../constants/vatRates'
 import RoiPredictionChart from '../Charts/RoiPredictionChart'
 
 function ConfidenceBadge({ confidence }) {
@@ -25,13 +27,73 @@ function formatBreakEven(day) {
   return `D${day}`
 }
 
-function RoiPredictionCard({ weeklyData }) {
+function RoiPredictionCard({ weeklyData, filteredData, hasCountryField, vatMode }) {
   const [selectedWeekIdx, setSelectedWeekIdx] = useState(0)
+  const [predCountry, setPredCountry] = useState('全部')
+  const [localVatMode, setLocalVatMode] = useState(vatMode) // 卡片内独立 VAT 开关
+
+  // 同步全局 vatMode
+  useMemo(() => setLocalVatMode(vatMode), [vatMode])
+
+  // 国家选项列表（按消耗额降序）
+  const countryOptions = useMemo(() => {
+    if (!hasCountryField || !filteredData) return []
+    // 按国家汇总消耗
+    const spendByCountry = {}
+    filteredData.forEach(r => {
+      const country = r['国家']
+      if (!country) return
+      const spend = Number(r['消耗($)']) || 0
+      spendByCountry[country] = (spendByCountry[country] || 0) + spend
+    })
+    // 按消耗降序排列
+    const sorted = Object.entries(spendByCountry)
+      .sort((a, b) => b[1] - a[1])
+      .map(([country]) => country)
+    return ['全部', ...sorted]
+  }, [filteredData, hasCountryField])
+
+  // 始终从 filteredData 重新聚合，确保 VAT 切换生效
+  const countryWeeklyData = useMemo(() => {
+    if (!filteredData || filteredData.length === 0) return weeklyData
+    let rows = filteredData
+    if (predCountry !== '全部') {
+      rows = filteredData.filter(r => r['国家'] === predCountry)
+    }
+    return aggregateByWeek(rows, { vatMode: localVatMode })
+  }, [weeklyData, filteredData, predCountry, localVatMode])
+
+  // 计算加权平均 VAT 率（按消耗加权）
+  const avgVAT = useMemo(() => {
+    if (!localVatMode || !filteredData) return 0
+    let rows = filteredData
+    if (predCountry !== '全部') {
+      rows = filteredData.filter(r => r['国家'] === predCountry)
+    }
+    // 按消耗加权计算平均 VAT
+    let totalSpend = 0, weightedVAT = 0
+    rows.forEach(r => {
+      if (r._isOrganic) return // 自然量无消耗
+      const spend = Number(r['消耗($)']) || 0
+      if (spend > 0) {
+        totalSpend += spend
+        weightedVAT += spend * getVATRate(r['国家'])
+      }
+    })
+    return totalSpend > 0 ? weightedVAT / totalSpend : 0
+  }, [filteredData, predCountry, localVatMode])
+
+  // 回本线阈值：仅需考虑平台分成（VAT 已体现在 ROI 数据中）
+  // ROI数据已扣除VAT（开启时）：net_ROI = gross_ROI / (1+VAT)
+  // 回本条件：net_ROI × 0.70 = 1 → net_ROI = 1/0.70
+  const breakEvenROI = useMemo(() => {
+    return computeBreakEvenROI(0) // VAT已在数据中扣除，阈值只需平台分成
+  }, [])
 
   // 批量预测所有周
   const predictions = useMemo(() => {
-    return predictAllWeeks(weeklyData)
-  }, [weeklyData])
+    return predictAllWeeks(countryWeeklyData, breakEvenROI)
+  }, [countryWeeklyData, breakEvenROI])
 
   // 有效预测的周（至少有 2 个观测点）
   const validPredictions = useMemo(() => {
@@ -55,19 +117,50 @@ function RoiPredictionCard({ weeklyData }) {
 
   return (
     <div className="card mb-6">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <h3 className="text-lg font-semibold text-gray-900">ROI 预测分析</h3>
-        <select
-          value={selectedWeekIdx}
-          onChange={(e) => setSelectedWeekIdx(Number(e.target.value))}
-          className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm"
-        >
-          {predictions.map((p, i) => (
-            <option key={p.weekKey} value={i}>
-              {p.weekKey} {p.prediction.confidence === 'actual' ? '(已实测)' : `(D1~D${p.observations[p.observations.length - 1]?.day || '?'})`}
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-3">
+          {/* 含税/不含税切换 */}
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={localVatMode}
+              onChange={(e) => setLocalVatMode(e.target.checked)}
+              className="w-3.5 h-3.5 rounded border-gray-300 text-green-600 focus:ring-green-500"
+            />
+            <span className="text-xs text-gray-600">扣除增值税</span>
+          </label>
+          {localVatMode && (
+            <span className="px-1.5 py-0.5 bg-green-100 text-green-700 text-xs font-medium rounded">净收入</span>
+          )}
+          {/* 国家筛选 */}
+          {countryOptions.length > 0 && (
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-gray-600">国家:</label>
+              <select
+                value={predCountry}
+                onChange={(e) => { setPredCountry(e.target.value); setSelectedWeekIdx(0) }}
+                className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm"
+              >
+                {countryOptions.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {/* 周选择器 */}
+          <select
+            value={selectedWeekIdx}
+            onChange={(e) => setSelectedWeekIdx(Number(e.target.value))}
+            className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm"
+          >
+            {predictions.map((p, i) => (
+              <option key={p.weekKey} value={i}>
+                {p.weekKey} {p.prediction.confidence === 'actual' ? '(已实测)' : `(D1~D${p.observations[p.observations.length - 1]?.day || '?'})`}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       {/* 单周拟合曲线图 */}
@@ -75,6 +168,7 @@ function RoiPredictionCard({ weeklyData }) {
         <RoiPredictionChart
           observations={selected.observations}
           prediction={selected.prediction}
+          breakEvenROI={breakEvenROI}
         />
       )}
 
@@ -99,14 +193,23 @@ function RoiPredictionCard({ weeklyData }) {
               }
             </div>
           </div>
-          <div className="bg-gray-50 rounded-lg p-3 text-center" title="ROI达到150%的时间">
+          <div className="bg-gray-50 rounded-lg p-3 text-center" title={`现金回本条件：\n净ROI × 平台分成(70%) = 1\n即净ROI ≥ ${(breakEvenROI * 100).toFixed(1)}%${localVatMode && avgVAT > 0 ? `\n\n考虑VAT ${(avgVAT * 100).toFixed(1)}%后：\n毛ROI需 ≥ ${((1 + avgVAT) / 0.70 * 100).toFixed(1)}%` : ''}`}>
             <div className="text-xs text-gray-500 mb-1">预测回本日</div>
             <div className={`text-sm font-semibold ${
               pred.breakEvenDay ? 'text-green-600' : 'text-red-600'
             }`}>
               {formatBreakEven(pred.breakEvenDay)}
             </div>
-            <div className="text-xs text-gray-400 mt-0.5">ROI≥150%</div>
+            <div className="text-xs text-gray-400 mt-0.5">
+              {localVatMode && avgVAT > 0 ? (
+                <span>
+                  <span className="text-green-600">净ROI≥{(breakEvenROI * 100).toFixed(0)}%</span>
+                  <span className="text-gray-500"> (毛≥{((1 + avgVAT) / 0.70 * 100).toFixed(0)}%)</span>
+                </span>
+              ) : (
+                <span>ROI≥{(breakEvenROI * 100).toFixed(0)}%</span>
+              )}
+            </div>
           </div>
           <div className="bg-gray-50 rounded-lg p-3 text-center">
             <div className="text-xs text-gray-500 mb-1">置信度</div>
@@ -160,7 +263,16 @@ function RoiPredictionCard({ weeklyData }) {
                       <td className="py-2 px-3 text-right">
                         {(() => {
                           const actualD30 = p.observations.find(o => o.day === 30)
-                          if (actualD30) return <span className="font-medium">{(actualD30.roi * 100).toFixed(1)}%*</span>
+                          if (actualD30) {
+                            // 诊断信息：聚合行数
+                            const weekRows = countryWeeklyData.find(w => w.weekKey === p.weekKey)
+                            const rowCount = weekRows?.count || 0
+                            return (
+                              <span className="font-medium" title={`D30 ROI 来自 ${rowCount} 行数据聚合（消耗加权）`}>
+                                {(actualD30.roi * 100).toFixed(1)}%*
+                              </span>
+                            )
+                          }
                           const predD30 = p.prediction.predictAt?.(30)
                           if (predD30 > 0) return <span className="text-gray-500">{(predD30 * 100).toFixed(1)}%</span>
                           return <span className="text-gray-400">-</span>
@@ -175,9 +287,17 @@ function RoiPredictionCard({ weeklyData }) {
                           : `${(p.prediction.predictD180 * 100).toFixed(1)}%`
                         }
                       </td>
-                      <td className="py-2 px-3 text-right" title="ROI达到150%的时间">
+                      <td className="py-2 px-3 text-right" title={`ROI达到${(breakEvenROI * 100).toFixed(1)}%的时间`}>
                         {formatBreakEven(p.prediction.breakEvenDay)}
-                        {p.prediction.breakEvenDay && <div className="text-xs text-gray-400">ROI≥150%</div>}
+                        {p.prediction.breakEvenDay && (
+                          <div className="text-xs text-gray-400">
+                            {localVatMode && avgVAT > 0 ? (
+                              <span className="text-green-600">净≥{(breakEvenROI * 100).toFixed(0)}%</span>
+                            ) : (
+                              <span>≥{(breakEvenROI * 100).toFixed(0)}%</span>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td className="py-2 px-3 text-right text-gray-500">
                         {p.prediction.r2 > 0 ? `${(p.prediction.r2 * 100).toFixed(0)}%` : '-'}
@@ -203,7 +323,7 @@ function RoiPredictionCard({ weeklyData }) {
           <li><span className="text-gray-500 font-medium">数据：</span>使用 D1~D30 每日 ROI + D36 起里程碑数据，单调性异常值剔除</li>
           <li><span className="text-gray-500 font-medium">全局参考：</span>汇集历史所有周数据（以 D30 归一化），拟合全局增长曲线作为外推基准</li>
           <li><span className="text-gray-500 font-medium">外推策略：</span>以当前周最远观测日为锚点，按全局模型曲线等比缩放预估长线 ROI</li>
-          <li><span className="text-gray-500 font-medium">回本日：</span>ROI 达到 150%（财务回本线）的预测天数</li>
+          <li><span className="text-gray-500 font-medium">回本日：</span>现金回本线 = ROI ≥ {(breakEvenROI * 100).toFixed(1)}%（平台分成30%）{localVatMode && avgVAT > 0 ? `，数据已扣除VAT ${(avgVAT * 100).toFixed(1)}%` : ''}</li>
         </ul>
         <h4 className="text-xs font-semibold text-gray-500 mt-3 mb-1.5">数据清理规则</h4>
         <ul className="text-xs text-gray-400 space-y-1 leading-relaxed">

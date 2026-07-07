@@ -11,6 +11,7 @@ import CpaArpuChart from '../Charts/CpaArpuChart'
 import LtvChart from '../Charts/LtvChart'
 import MonetizationChart from '../Charts/MonetizationChart'
 import RoiPredictionCard from './RoiPredictionCard'
+import BreakEvenTargetTable from './BreakEvenTargetTable'
 import { predictAllWeeks } from '../../services/roiPredictor'
 import { aggregateByGroup, aggregateByWeek, getCurrentWeekData, getWeekOptions, getWeekDataByRange, getWeekRows } from '../../services/aggregator'
 import {
@@ -37,6 +38,7 @@ function Dashboard({ data, report, exportDate, hasMediaField = true, hasCountryF
   const [showIntegrityReport, setShowIntegrityReport] = useState(true)
   const [selectedWeekKey, setSelectedWeekKey] = useState(null) // null = 默认最近一周
   const [showAnalysis, setShowAnalysis] = useState(true) // 是否显示分析洞察
+  const [vatMode, setVatMode] = useState(false) // 是否扣除增值税
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
   const reportRef = useRef(null)
@@ -57,9 +59,19 @@ function Dashboard({ data, report, exportDate, hasMediaField = true, hasCountryF
       ? [...new Set((data || []).map(r => r['媒体']).filter(Boolean))].filter(m => m !== '自然量')
       : []
     const appNames = [...new Set((data || []).map(r => r['应用名称']).filter(Boolean))]
-    const countries = hasCountryField
-      ? [...new Set((data || []).map(r => r['国家']).filter(Boolean))]
-      : []
+    // 国家按消耗额降序排列
+    let countries = []
+    if (hasCountryField) {
+      const spendByCountry = {}
+      ;(data || []).forEach(r => {
+        const c = r['国家']
+        if (!c) return
+        spendByCountry[c] = (spendByCountry[c] || 0) + (Number(r['消耗($)']) || 0)
+      })
+      countries = Object.entries(spendByCountry)
+        .sort((a, b) => b[1] - a[1])
+        .map(([c]) => c)
+    }
     
     return {
       media: hasMediaField ? ['全部', ...medias] : [],
@@ -81,20 +93,20 @@ function Dashboard({ data, report, exportDate, hasMediaField = true, hasCountryF
   const currentWeekData = useMemo(() => {
     const selectedOption = weekOptions.find(w => w.weekKey === activeWeekKey)
     if (selectedOption) {
-      return getWeekDataByRange(filteredData, selectedOption)
+      return getWeekDataByRange(filteredData, selectedOption, { vatMode })
     }
-    return getCurrentWeekData(filteredData, exportDate)
-  }, [filteredData, exportDate, activeWeekKey, weekOptions])
+    return getCurrentWeekData(filteredData, exportDate, { vatMode })
+  }, [filteredData, exportDate, activeWeekKey, weekOptions, vatMode])
   
   // 按产品聚合
   const productData = useMemo(() => {
-    return aggregateByGroup(filteredData, 'appName')
-  }, [filteredData])
+    return aggregateByGroup(filteredData, 'appName', { vatMode })
+  }, [filteredData, vatMode])
   
   // 按周趋势
   const weeklyData = useMemo(() => {
-    return aggregateByWeek(filteredData)
-  }, [filteredData])
+    return aggregateByWeek(filteredData, { vatMode })
+  }, [filteredData, vatMode])
   
   // 选中周的产品数据（剔除非完整数据）
   const selectedWeekProductData = useMemo(() => {
@@ -102,8 +114,8 @@ function Dashboard({ data, report, exportDate, hasMediaField = true, hasCountryF
     if (!selectedOption) return []
     
     const weekRows = getWeekRows(filteredData, selectedOption)
-    return aggregateByGroup(weekRows, 'appName')
-  }, [filteredData, activeWeekKey, weekOptions])
+    return aggregateByGroup(weekRows, 'appName', { vatMode })
+  }, [filteredData, activeWeekKey, weekOptions, vatMode])
   
   // 选中周的国家数据（剔除非完整数据）
   const selectedWeekCountryData = useMemo(() => {
@@ -111,8 +123,8 @@ function Dashboard({ data, report, exportDate, hasMediaField = true, hasCountryF
     if (!selectedOption) return []
     
     const weekRows = getWeekRows(filteredData, selectedOption)
-    return aggregateByGroup(weekRows, 'country')
-  }, [filteredData, activeWeekKey, weekOptions])
+    return aggregateByGroup(weekRows, 'country', { vatMode })
+  }, [filteredData, activeWeekKey, weekOptions, vatMode])
 
   // 分析洞察
   const analyses = useMemo(() => {
@@ -249,6 +261,9 @@ function Dashboard({ data, report, exportDate, hasMediaField = true, hasCountryF
           filters={filters}
           onChange={setFilters}
           options={filterOptions}
+          vatMode={vatMode}
+          onVatModeChange={setVatMode}
+          data={filteredData}
         />
       </div>
       
@@ -341,7 +356,16 @@ function Dashboard({ data, report, exportDate, hasMediaField = true, hasCountryF
       </div>
 
       {/* ROI 预测分析 */}
-      <RoiPredictionCard weeklyData={weeklyData} />
+      <RoiPredictionCard weeklyData={weeklyData} filteredData={filteredData} hasCountryField={hasCountryField} vatMode={vatMode} />
+
+      {/* 各国 D30 回本目标表（独立β数据源 + 独立国家筛选） */}
+      {hasCountryField && (
+        <BreakEvenTargetTable
+          data={data}
+          hasCountryField={hasCountryField}
+          hasMediaField={hasMediaField}
+        />
+      )}
       </div>{/* 关闭 reportRef */}
     </div>
   )
